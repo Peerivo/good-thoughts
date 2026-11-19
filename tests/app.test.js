@@ -67,6 +67,23 @@ test('unconfigured mail refuses requests rather than pretending to send',async()
   assert.equal(r.status,503);
  }finally{await s.done();}
 });
+test('failed verification-email delivery leaves no confirmed or pending question',async()=>{
+ const s=await setup({emailSender:async()=>{throw Error('provider_unavailable');}});
+ const hdr={authorization:'Bearer admin_token_that_is_at_least_20_chars'};
+ try{
+  const result=await s.call('/api/requests',VALID);
+  assert.equal(result.status,503);
+  assert.equal(result.body.requestId,undefined,'do not expose a nonexistent request');
+  const pending=await s.call('/api/internal/pending',undefined,hdr);
+  assert.equal(pending.status,200);
+  assert.deepEqual(pending.body.requests,[]);
+  assert.deepEqual(pending.body.awaitingApproval,[]);
+  const summary=await s.call('/api/internal/summary',undefined,hdr);
+  assert.deepEqual(summary.body.counts,[],'failed email must roll back the unverified row');
+  const notices=await s.call('/api/internal/notifications',undefined,hdr);
+  assert.deepEqual(notices.body.notifications,[],'do not notify owner of an unconfirmed question');
+ }finally{await s.done();}
+});
 test('rejects invalid input and throttles repeated requests',async()=>{
  const s=await setup();
  try{
