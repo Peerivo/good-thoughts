@@ -147,3 +147,17 @@ test('notification outbox is owner-only and records a single issue receipt',asyn
   assert.equal((await s.call('/api/internal/notifications',undefined,hdr)).body.notifications.length,1);
  }finally{await s.done();}
 });
+
+test('HEAD on public frontend matches GET status and content type without body',async()=>{
+ const s=await setup();
+ try {
+  const port=s.app.server.address().port;
+  const base='http://127.0.0.1:'+port;
+  const get=await fetch(base+'/');
+  const head=await fetch(base+'/',{method:'HEAD'});
+  assert.equal(head.status,get.status);
+  assert.equal(head.headers.get('content-type'),get.headers.get('content-type'));
+  assert.equal((await head.arrayBuffer()).byteLength,0);
+  assert.equal((await fetch(base+'/api/internal/pending',{method:'HEAD'})).status,401);
+ }finally{await s.done();}
+});

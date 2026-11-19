@@ -205,7 +205,7 @@ export function createApp(options={}) {
     }
     return json(res,404,{message:'Unknown admin route'});
   }
-  if(method==='GET'&&!path.startsWith('/api/')){
+  if((method==='GET'||method==='HEAD')&&!path.startsWith('/api/')){
     const isAsset=/^\/assets\/[A-Za-z0-9_.-]+$/.test(path);
     const isBrandAsset=path==='/dm-logo.png'||path==='/dm-icon.png';
     const file=(isAsset||isBrandAsset)?join(process.cwd(),'dist',path):join(process.cwd(),'dist','index.html');
@@ -213,7 +213,7 @@ export function createApp(options={}) {
     const ext=extname(file),contentType={'.html':'text/html','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml','.png':'image/png'}[ext]||'application/octet-stream';
     res.writeHead(200,{'Content-Type':contentType+'; charset=utf-8','X-Content-Type-Options':'nosniff',
       'Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'self'; img-src 'self' data:; connect-src 'self'; script-src 'self'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'"});
-    return res.end(readFileSync(file));
+    return method==='HEAD'?res.end():res.end(readFileSync(file));
   }
   return json(res,404,{message:'Not found'});
  }
