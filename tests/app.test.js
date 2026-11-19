@@ -163,6 +163,21 @@ test('HEAD on public frontend matches GET status and content type without body',
 });
 
 // Regression: private questions must never be readable with an invalid token or cached.
+test('owner-only summary and notification APIs reject unauthenticated reads',async()=>{
+ const s=await setup();
+ try {
+  const base='http://127.0.0.1:'+s.app.server.address().port;
+  for(const path of ['/api/internal/summary','/api/internal/notifications']){
+   const anonymous=await fetch(base+path);
+   assert.equal(anonymous.status,401,path);
+   assert.equal(anonymous.headers.get('cache-control'),'no-store');
+   const authorized=await fetch(base+path,{headers:{authorization:'Bearer admin_token_that_is_at_least_20_chars'}});
+   assert.equal(authorized.status,200,path);
+   assert.equal(authorized.headers.get('cache-control'),'no-store');
+  }
+ }finally{await s.done();}
+});
+
 test('private pending API rejects wrong bearer and disables caching',async()=>{
  const s=await setup();
  try {
