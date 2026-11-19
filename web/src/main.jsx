@@ -73,7 +73,7 @@ function App(){
      <label className="consent"><input type="checkbox" checked={agreed} onChange={e=>setAgreed(e.target.checked)} required/> <span>Согласен(на) на обработку вопроса и email для получения ответа. Не указывайте конфиденциальные данные.</span></label>
      {error&&<div role="alert" className="error">{error}</div>}
      <button className="submit" type="submit" disabled={!agreed||loading}>{loading?'Отправляем код…':'Отправить добрую мысль'} <span aria-hidden="true">↗</span></button>
-     <p className="hint under">После подтверждения постараемся ответить в течение часа. Ответы приходят не мгновенно.</p>
+     <p className="hint under">После подтверждения подготовим ответ. Он придёт после проверки владельцем проекта; срок зависит от согласования.</p>
     </form>}
     {phase==='verify'&&<form onSubmit={verify} className="phase">
       <span className="eyebrow">ПОДТВЕРЖДЕНИЕ EMAIL</span><h2>Проверьте почту</h2>
@@ -84,7 +84,7 @@ function App(){
       <button className="text-button" type="button" onClick={()=>{setPhase('write');setCode('');setError('');}}>Изменить email или вопрос</button>
      </form>}
     {phase==='done'&&<div className="phase done" role="status"><span className="done-icon">✓</span><span className="eyebrow">ВОПРОС ПРИНЯТ</span><h2>Спасибо за доверие!</h2>
-      <p>Ваш email подтверждён. Вопрос попал в очередь, и мы постараемся ответить в течение часа.</p>
+      <p>Ваш email подтверждён. Вопрос попал в очередь. Мы подготовим ответ и отправим его после проверки.</p>
       <button className="submit" onClick={()=>{setPhase('write');setQuestion('');setCode('');setRequestId('');}}>Задать ещё один вопрос ↗</button>
      </div>}
    </section>

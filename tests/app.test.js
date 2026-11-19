@@ -20,27 +20,42 @@ async function setup(extra={}) {
  return {app,dir,emails,telegram,call,done:async()=>{await app.close();rmSync(dir,{recursive:true,force:true});}};
 }
 const VALID={category:'support',question:'Мне не хватает поддержки сегодня.',email:'test@example.org'};
-test('new website question stays unqueued until valid email confirmation; delivers once',async()=>{
- const s=await setup();
+test('email confirmation -> draft -> owner approval -> one delivery; no direct auto-send',async()=>{
+ const s=await setup();const hdr={authorization:'Bearer admin_token_that_is_at_least_20_chars'};
  try{
   const first=await s.call('/api/requests',VALID);
   assert.equal(first.status,202);
   assert.equal(s.emails.length,1);
-  let queue=await s.call('/api/internal/pending');
-  assert.equal(queue.status,401);
-  queue=await s.call('/api/internal/pending',undefined,{authorization:'Bearer admin_token_that_is_at_least_20_chars'});
-  assert.equal(queue.body.requests.length,0);
-  const code=s.emails[0].text.match(/\d{6}/)[0];
+  assert.equal((await s.call('/api/internal/pending')).status,401);
+  let q=await s.call('/api/internal/pending',undefined,hdr);
+  assert.equal(q.body.requests.length,0);
+  const code=s.emails[0].text.match(/[0-9]{6}/)[0];
   assert.equal((await s.call('/api/verify',{requestId:first.body.requestId,code:code==='999999'?'888888':'999999'})).status,400);
   assert.equal((await s.call('/api/verify',{requestId:first.body.requestId,code})).status,200);
-  queue=await s.call('/api/internal/pending',undefined,{authorization:'Bearer admin_token_that_is_at_least_20_chars'});
-  assert.equal(queue.body.requests.length,1);
-  assert.equal(queue.body.requests[0].question,VALID.question);
-  const answer=await s.call('/api/internal/answer',{id:first.body.requestId,answer:'Вы можете дать себе немного времени и сделать маленький шаг.'},{authorization:'Bearer admin_token_that_is_at_least_20_chars'});
-  assert.equal(answer.status,200);
+  q=await s.call('/api/internal/pending',undefined,hdr);
+  assert.equal(q.body.requests.length,1);
+  assert.equal(q.body.requests[0].question,VALID.question);
+  const notices=await s.call('/api/internal/notifications',undefined,hdr);
+  assert.equal(notices.body.notifications.length,1);
+  assert.equal(notices.body.notifications[0].kind,'new_question');
+  assert.equal((await s.call('/api/internal/answer',{id:first.body.requestId,answer:'Этот путь устарел.'},hdr)).status,410);
+  const answer='Вы можете дать себе немного времени и сделать маленький шаг.';
+  const draft=await s.call('/api/internal/draft',{id:first.body.requestId,answer},hdr);
+  assert.equal(draft.status,200);
+  assert.equal(draft.body.status,'awaiting_approval');
+  assert.equal(s.emails.length,1,'drafting must never send');
+  const id=first.body.requestId,version=draft.body.draftVersion;
+  assert.equal((await s.call('/api/internal/deliver',{id,version},hdr)).status,409);
+  const review=await s.call('/api/internal/pending',undefined,hdr);
+  assert.equal(review.body.awaitingApproval[0].answer,answer);
+  assert.equal((await s.call('/api/internal/approve',{id,version,decision:'approve'},hdr)).status,200);
+  assert.equal(s.emails.length,1,'approving alone must not send');
+  const result=await s.call('/api/internal/deliver',{id,version},hdr);
+  assert.equal(result.status,200);
   assert.equal(s.emails.length,2);
-  assert.equal((await s.call('/api/internal/answer',{id:first.body.requestId,answer:'Другой ответ совершенно нежелателен.'},{authorization:'Bearer admin_token_that_is_at_least_20_chars'})).status,409);
-  assert.equal((await s.call('/api/verify',{requestId:first.body.requestId,code})).status,400);
+  assert.match(s.emails[1].text,/маленький шаг/);
+  assert.equal((await s.call('/api/internal/deliver',{id,version},hdr)).status,409);
+  assert.equal((await s.call('/api/verify',{requestId:id,code})).status,400);
  }finally{await s.done();}
 });
 test('unconfigured mail refuses requests rather than pretending to send',async()=>{
@@ -74,23 +89,61 @@ test('telegram requires secret, ignores duplicate update, queues private chat',a
   assert.equal(s.telegram.length,1);
  }finally{await s.done();}
 });
-test('failed delivery retains the prepared answer and retries without losing it',async()=>{
+test('rejection, revised draft, stale approvals, and version gate work',async()=>{
+ const s=await setup();const hdr={authorization:'Bearer admin_token_that_is_at_least_20_chars'};
+ try {
+  const r=await s.call('/api/requests',VALID),id=r.body.requestId;
+  const code=s.emails[0].text.match(/[0-9]{6}/)[0];
+  await s.call('/api/verify',{requestId:id,code});
+  const one=await s.call('/api/internal/draft',{id,answer:'Вариант первый для отправки клиенту.'},hdr);
+  const v1=one.body.draftVersion;
+  assert.equal((await s.call('/api/internal/approve',{id,version:v1,decision:'revise'},hdr)).body.status,'revision_requested');
+  assert.equal((await s.call('/api/internal/deliver',{id,version:v1},hdr)).status,409);
+  const two=await s.call('/api/internal/draft',{id,answer:'Новый исправленный ответ для клиента.'},hdr);
+  assert.equal(two.body.draftVersion,v1+1);
+  assert.equal((await s.call('/api/internal/approve',{id,version:v1,decision:'approve'},hdr)).status,409);
+  assert.equal((await s.call('/api/internal/approve',{id,version:v1+1,decision:'approve'},hdr)).status,200);
+  assert.equal((await s.call('/api/internal/deliver',{id,version:v1},hdr)).status,409);
+  assert.equal(s.emails.length,1);
+  assert.equal((await s.call('/api/internal/deliver',{id,version:v1+1},hdr)).status,200);
+  assert.match(s.emails[1].text,/исправленный/);
+  assert.doesNotMatch(s.emails[1].text,/Вариант первый/);
+ }finally{await s.done();}
+});
+test('ambiguous delivery failure never silently retries or resends',async()=>{
  const sent=[];
- const s=await setup({emailSender:async msg=>{sent.push(msg);if(sent.length===2)throw Error('test_failure');}});
+ const s=await setup({emailSender:async msg=>{sent.push(msg);if(sent.length===2)throw Error('timeout_unknown');}});
+ const hdr={authorization:'Bearer admin_token_that_is_at_least_20_chars'};
  try{
-  const intake=await s.call('/api/requests',VALID);
+  const r=await s.call('/api/requests',VALID),id=r.body.requestId;
   const code=sent[0].text.match(/[0-9]{6}/)[0];
-  assert.equal((await s.call('/api/verify',{requestId:intake.body.requestId,code})).status,200);
-  const hdr={authorization:'Bearer admin_token_that_is_at_least_20_chars'};
-  const first=await s.call('/api/internal/answer',{id:intake.body.requestId,answer:'Первый бережный ответ, который нужно сохранить.'},hdr);
-  assert.equal(first.status,502);
-  assert.equal(first.body.status,'delivery_failed');
-  const pending=await s.call('/api/internal/pending',undefined,hdr);
-  assert.equal(pending.body.failedDeliveries.length,1);
-  const second=await s.call('/api/internal/answer',{id:intake.body.requestId,answer:'Другой ответ не должен заменить предыдущий.'},hdr);
-  assert.equal(second.status,200);
-  assert.equal(sent.length,3);
-  assert.match(sent[2].text,/Первый бережный ответ/);
-  assert.doesNotMatch(sent[2].text,/Другой ответ/);
+  await s.call('/api/verify',{requestId:id,code});
+  const draft=await s.call('/api/internal/draft',{id,answer:'Этот бережный ответ должен остаться неизменным.'},hdr);
+  const version=draft.body.draftVersion;
+  await s.call('/api/internal/approve',{id,version,decision:'approve'},hdr);
+  const failure=await s.call('/api/internal/deliver',{id,version},hdr);
+  assert.equal(failure.status,502);
+  assert.equal(failure.body.status,'delivery_failed');
+  assert.equal((await s.call('/api/internal/deliver',{id,version},hdr)).status,409);
+  assert.equal((await s.call('/api/internal/answer',{id,answer:'Другой ответ'},hdr)).status,410);
+  assert.equal(sent.length,2);
+  assert.equal((await s.call('/api/internal/pending',undefined,hdr)).body.failedDeliveries.length,1);
+ }finally{await s.done();}
+});
+test('notification outbox is owner-only and records a single issue receipt',async()=>{
+ const s=await setup(),hdr={authorization:'Bearer admin_token_that_is_at_least_20_chars'};
+ try{
+  const r=await s.call('/api/requests',VALID),id=r.body.requestId;
+  const code=s.emails[0].text.match(/[0-9]{6}/)[0];
+  await s.call('/api/verify',{requestId:id,code});
+  const d=await s.call('/api/internal/draft',{id,answer:'Нужен отдельный предварительно одобренный ответ.'},hdr);
+  const n=await s.call('/api/internal/notifications',undefined,hdr);
+  assert.equal(n.body.notifications.length,2);
+  assert.deepEqual(new Set(n.body.notifications.map(x=>x.kind)),new Set(['new_question','draft_v'+d.body.draftVersion]));
+  const n0=n.body.notifications[0];
+  assert.equal((await s.call('/api/internal/notification-sent',{id:n0.id,issueNumber:9})).status,401);
+  assert.equal((await s.call('/api/internal/notification-sent',{id:n0.id,issueNumber:9},hdr)).status,200);
+  assert.equal((await s.call('/api/internal/notification-sent',{id:n0.id,issueNumber:9},hdr)).status,409);
+  assert.equal((await s.call('/api/internal/notifications',undefined,hdr)).body.notifications.length,1);
  }finally{await s.done();}
 });

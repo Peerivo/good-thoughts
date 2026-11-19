@@ -28,6 +28,9 @@ export function createApp(options={}) {
  const emailSender=options.emailSender||((message)=>sendEmail(config,message));
  const telegramSender=options.telegramSender||((message)=>sendTelegram(config,message));
  const ipHash=v=>hash(v+':'+config.adminToken);
+ function ownerNotification(id,kind) {
+  db.prepare("INSERT INTO owner_notifications(id,request_id,kind,created_at) VALUES(?,?,?,?)").run(randomUUID(),id,kind,time());
+ }
  const mailEnabled=()=>Boolean(options.emailSender||(config.resendKey&&config.mailFrom));
  const telegramEnabled=()=>Boolean(config.telegramToken&&config.telegramSecret);
  const json=(res,status,body)=>{
@@ -47,7 +50,7 @@ export function createApp(options={}) {
     ?(typeof req.headers['x-real-ip']==='string'?req.headers['x-real-ip']:'loopback')
     :(req.socket.remoteAddress||'unknown');
   if(method==='GET'&&path==='/api/health')return json(res,200,{
-    status:'ok',service:'good-thoughts',version:1,
+    status:'ok',service:'good-thoughts',version:2,approvalRequired:true,
     emailEnabled:mailEnabled()&&Boolean(config.resendKey&&config.mailFrom),
     telegramEnabled:telegramEnabled()});
   if(method==='GET'&&path==='/api/categories')return json(res,200,{categories:CATEGORIES});
@@ -92,7 +95,8 @@ export function createApp(options={}) {
       return json(res,400,{message:'Неверный код.'});
     }
     db.prepare("UPDATE requests SET status='queued',code_hash=NULL,code_expires=NULL,queued_at=?,updated_at=? WHERE id=?").run(time(),time(),r.id);
-    return json(res,200,{message:'Вопрос подтверждён. Мы постараемся ответить в течение часа.'});
+    ownerNotification(r.id,'new_question');
+    return json(res,200,{message:'Вопрос подтверждён. Подготовим ответ и отправим после проверки.'});
   }
   if(method==='POST'&&path==='/api/telegram/webhook'){
     if(!telegramEnabled())return json(res,503,{message:'Telegram disabled'});
@@ -126,7 +130,8 @@ export function createApp(options={}) {
     const id=randomUUID(),t=time();
     db.prepare('INSERT INTO requests(id,channel,category,question,chat_id,status,created_at,queued_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
       .run(id,'telegram',category,question,chatId,'queued',t,t,t);
-    try{await telegramSender({chatId,text:'Спасибо! Вопрос принят 🌿 Постараемся ответить в течение часа.'});}catch{}
+    ownerNotification(id,'new_question');
+    try{await telegramSender({chatId,text:'Спасибо! Вопрос принят 🌿 Подготовим ответ и отправим после проверки.'});}catch{}
     return json(res,200,{ok:true});
   }
   if(path.startsWith('/api/internal/')){
@@ -137,29 +142,65 @@ export function createApp(options={}) {
     }
     if(method==='GET'&&path==='/api/internal/pending'){
       const requests=db.prepare("SELECT id,channel,category,question,created_at,queued_at FROM requests WHERE status='queued' ORDER BY queued_at LIMIT 20").all();
+      const approvals=db.prepare("SELECT id,channel,category,question,answer,draft_version,draft_updated_at,status FROM requests WHERE status IN ('awaiting_approval','revision_requested') ORDER BY draft_updated_at LIMIT 20").all();
       const failures=db.prepare("SELECT id,channel,delivery_error FROM requests WHERE status='delivery_failed' ORDER BY updated_at LIMIT 20").all();
-      return json(res,200,{requests,failedDeliveries:failures});
+      return json(res,200,{requests,awaitingApproval:approvals,failedDeliveries:failures});
     }
-    if(method==='POST'&&path==='/api/internal/answer'){
+    if(method==='GET'&&path==='/api/internal/notifications'){
+      return json(res,200,{notifications:db.prepare("SELECT id,kind,request_id,created_at FROM owner_notifications WHERE status='pending' ORDER BY created_at LIMIT 20").all()});
+    }
+    if(method==='POST'&&path==='/api/internal/notification-sent'){
+      const b=await body(req);
+      if(typeof b?.id!=='string'||!Number.isSafeInteger(b?.issueNumber)||b.issueNumber<=0)
+        return json(res,400,{message:'Invalid receipt'});
+      const changed=db.prepare("UPDATE owner_notifications SET status='sent',issue_number=?,sent_at=? WHERE id=? AND status='pending'").run(b.issueNumber,time(),b.id);
+      if(!changed.changes)return json(res,409,{message:'Already recorded or unknown'});
+      return json(res,200,{status:'recorded'});
+    }
+    if(method==='POST'&&path==='/api/internal/draft'){
       const b=await body(req);
       if(typeof b?.id!=='string'||typeof b?.answer!=='string'||b.answer.trim().length<10||b.answer.length>3900)
-        return json(res,400,{message:'Invalid answer'});
-      const claim=db.prepare("UPDATE requests SET status='processing',updated_at=? WHERE id=? AND status IN ('queued','delivery_failed')").run(time(),b.id);
-      if(!claim.changes)return json(res,409,{message:'Already processed, or not queued'});
+        return json(res,400,{message:'Invalid draft'});
+      const changed=db.prepare("UPDATE requests SET status='awaiting_approval',answer=?,draft_version=draft_version+1,approved_at=NULL,approved_by=NULL,approved_version=NULL,draft_updated_at=?,updated_at=? WHERE id=? AND status IN ('queued','revision_requested','awaiting_approval')").run(b.answer.trim(),time(),time(),b.id);
+      if(!changed.changes)return json(res,409,{message:'Not eligible for drafting'});
+      const row=db.prepare('SELECT id,draft_version FROM requests WHERE id=?').get(b.id);
+      ownerNotification(b.id,'draft_v'+row.draft_version);
+      return json(res,200,{id:row.id,status:'awaiting_approval',draftVersion:row.draft_version,message:'Черновик сохранён. Отправка запрещена до одобрения владельца.'});
+    }
+    if(method==='POST'&&path==='/api/internal/approve'){
+      const b=await body(req);
+      if(typeof b?.id!=='string'||!Number.isSafeInteger(b.version)||!['approve','revise'].includes(b.decision))
+        return json(res,400,{message:'Invalid decision'});
+      const newStatus=b.decision==='approve'?'approved':'revision_requested';
+      const changed=db.prepare("UPDATE requests SET status=?,approved_version=?,approved_by=?,approved_at=?,updated_at=? WHERE id=? AND status='awaiting_approval' AND draft_version=? AND answer IS NOT NULL")
+       .run(newStatus,b.decision==='approve'?b.version:null,b.decision==='approve'?'owner':null,b.decision==='approve'?time():null,time(),b.id,b.version);
+      if(!changed.changes)return json(res,409,{message:'Draft changed or decision already recorded'});
+      return json(res,200,{id:b.id,status:newStatus,draftVersion:b.version});
+    }
+    if(method==='POST'&&path==='/api/internal/answer'){
+      return json(res,410,{message:'Direct delivery was disabled. Use /draft, /approve and /deliver.'});
+    }
+    if(method==='POST'&&path==='/api/internal/deliver'){
+      const b=await body(req);
+      if(typeof b?.id!=='string'||!Number.isSafeInteger(b.version))
+        return json(res,400,{message:'Invalid delivery request'});
+      // Explicit owner approval on the exact immutable draft version is mandatory.
+      const claimed=db.prepare("UPDATE requests SET status='processing',updated_at=? WHERE id=? AND status='approved' AND approved_by='owner' AND approved_version=? AND draft_version=? AND approved_at IS NOT NULL AND answer IS NOT NULL")
+       .run(time(),b.id,b.version,b.version);
+      if(!claimed.changes)return json(res,409,{message:'Not approved for this draft version'});
       const r=db.prepare('SELECT * FROM requests WHERE id=?').get(b.id);
-      const answer=r.answer||b.answer.trim();
-      db.prepare("UPDATE requests SET status='answered',answer=?,answered_at=COALESCE(answered_at,?),updated_at=? WHERE id=?").run(answer,time(),time(),r.id);
-      try{
-        if(r.channel==='email') await emailSender({to:r.email,subject:'Ваш ответ — Фабрика добрых мыслей',text:answer+'\n\nС заботой, Фабрика добрых мыслей'});
-        else await telegramSender({chatId:r.chat_id,text:answer});
+      try {
+        if(r.channel==='email')await emailSender({to:r.email,subject:'Ваш ответ — Фабрика добрых мыслей',text:r.answer+'\n\nС заботой, Фабрика добрых мыслей'});
+        else await telegramSender({chatId:r.chat_id,text:r.answer});
         db.prepare("UPDATE requests SET status='delivered',delivered_at=?,delivery_error=NULL,updated_at=? WHERE id=?").run(time(),time(),r.id);
         db.prepare("INSERT INTO deliveries(request_id,channel,state,attempted_at) VALUES(?,?,?,?)").run(r.id,r.channel,'delivered',time());
         return json(res,200,{id:r.id,status:'delivered'});
       }catch(err){
         const error=String(err?.message||'delivery_failed').replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,60);
+        // Ambiguous remote timeout is NOT proof of non-delivery. Never automatic retry.
         db.prepare("UPDATE requests SET status='delivery_failed',delivery_error=?,updated_at=? WHERE id=?").run(error,time(),r.id);
         db.prepare("INSERT INTO deliveries(request_id,channel,state,attempted_at,error_code) VALUES(?,?,?,?,?)").run(r.id,r.channel,'failed',time(),error);
-        return json(res,502,{id:r.id,status:'delivery_failed',message:'Ответ сохранён, но доставка не удалась.'});
+        return json(res,502,{id:r.id,status:'delivery_failed',message:'Доставка не подтверждена. Нужна ручная сверка до повторной отправки.'});
       }
     }
     return json(res,404,{message:'Unknown admin route'});

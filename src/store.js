@@ -20,6 +20,21 @@ export function openStore(path) {
  'channel TEXT NOT NULL,state TEXT NOT NULL,attempted_at INTEGER NOT NULL,error_code TEXT,',
  'FOREIGN KEY(request_id) REFERENCES requests(id));'
  ].join(' '));
+ // Idempotent additive SQLite migration; never reset user questions.
+ const existing=new Set(db.prepare('PRAGMA table_info(requests)').all().map(x=>x.name));
+ for(const [col,kind] of Object.entries({
+   draft_version:'INTEGER NOT NULL DEFAULT 0',
+   approved_version:'INTEGER',
+   approved_at:'INTEGER',
+   approved_by:'TEXT',
+   draft_updated_at:'INTEGER'
+ })) {
+   if(!existing.has(col))db.exec('ALTER TABLE requests ADD COLUMN '+col+' '+kind);
+ }
+ // Old answered/failed answers have no owner approval; block any legacy send.
+ db.prepare("UPDATE requests SET status='awaiting_approval', approved_version=NULL WHERE status IN ('answered','delivery_failed','processing') AND approved_version IS NULL").run();
+ db.exec("CREATE TABLE IF NOT EXISTS owner_notifications (id TEXT PRIMARY KEY,request_id TEXT NOT NULL REFERENCES requests(id),kind TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',issue_number INTEGER,created_at INTEGER NOT NULL,sent_at INTEGER,UNIQUE(request_id,kind,created_at));");
+ db.exec("CREATE INDEX IF NOT EXISTS owner_notice_pending ON owner_notifications(status,created_at);");
  return db;
 }
 export function consumeLimit(db,key,max,windowMs,t=Date.now()){

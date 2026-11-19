@@ -39,4 +39,22 @@
 7. Публичная приёмка на реальных email и Telegram (только по разрешению владельца).
 
 ## Входные данные владельца
-Выбор поддомена. BotFather токен нового бота и username через безопасный канал; настройка DNS отправителя Resend; контактный адрес для политики конфиденциальности. Пока тестовые обращения не идут на упомянутый личный Gmail.
+Домен выбран: dobro.peerivo.net. BotFather токен нового бота и username через безопасный канал; настройка DNS отправителя Resend; контактный адрес для политики конфиденциальности. Пока тестовые обращения не идут на упомянутый личный Gmail.
+
+## Owner approval (2026-11-19, owner requirement)
+
+Authoritative domain: dobro.peerivo.net. Owner must approve each exact draft version.
+New lifecycle: pending_verification -> queued -> awaiting_approval -> approved -> processing -> delivered.
+Return: awaiting_approval -> revision_requested -> awaiting_approval (new version).
+Delivery uncertainty: delivery_failed; no automatic retry due to possible duplicate.
+Legacy /api/internal/answer returns 410; owner approval cannot be bypassed.
+Internal API: POST /api/internal/draft -> POST /api/internal/approve (id,version,decision) -> POST /api/internal/deliver (id,version).
+Hourly agent may draft but NEVER approve on behalf of the owner.
+
+## Notify and public contribution boundary
+- Confirmed question enqueues owner_notifications(new_question). Draft enqueues owner_notifications(draft_vN).
+- Owner-only personal Notify uses PRIVATE Peerivo/notify Issues starting [notify:telegram], with opaque event IDs only (no question/email/answer or auth links).
+- Review of full question and answer requires authenticated owner interface. Until provisioned, only protected localhost API is available.
+- Notify human-actions buttons are a separate integration gated on verified owner binding, private chat, and delivery receipt.
+- Public repo MIT, CONTRIBUTING.md, SECURITY.md and GitHub-hosted-only CI for PRs; no deploy permissions for untrusted PRs.
+- Target of preparing draft within an hour does not guarantee delivery: human approval can take longer.
