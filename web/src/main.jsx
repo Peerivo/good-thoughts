@@ -17,15 +17,7 @@ const okJson=async(path, data)=>{
  return result;
 };
 function Logo(){
- return <span className="logo-mark" aria-label="ДМ">
-  <svg role="img" viewBox="0 0 84 84" xmlns="http://www.w3.org/2000/svg">
-   <defs><linearGradient id="glow" x1="0" y1="0" x2="1" y2="1"><stop stopColor="#f4ce7a"/><stop offset=".54" stopColor="#d990ac"/><stop offset="1" stopColor="#8b75d2"/></linearGradient></defs>
-   <circle cx="42" cy="42" r="38" fill="#f9f0ec"/>
-   <path d="M14 20 Q27 12 34 23 Q45 40 32 60 L10 60 L9 68 M19 28 L16 51 L26 51 Q36 41 29 30Z" fill="url(#glow)" stroke="#5b3e67" strokeWidth="2" strokeLinejoin="round"/>
-   <path d="M39 60 L46 19 L57 44 L71 19 L77 60 L65 60 L63 43 L55 58 L49 43 L47 60Z" fill="url(#glow)" stroke="#5b3e67" strokeWidth="2" strokeLinejoin="round"/>
-   <path d="M38 14 Q46 2 54 14" fill="none" stroke="#e4ad7b" strokeWidth="3" strokeLinecap="round"/>
-  </svg>
- </span>;
+ return <img className="logo-mark" src="/dm-logo.png" alt="ДМ — Фабрика добрых мыслей" width="108" height="61" />;
 }
 function App(){
  const [category,setCategory]=useState('support');
@@ -51,7 +43,7 @@ function App(){
  };
  return <div className="site">
   <header className="top"><div className="brand"><Logo/><span><b>Фабрика</b><small>добрых мыслей</small></span></div>
-   <span className="pill">Место, где мысли становятся добрее</span></header>
+   <nav className="site-nav" aria-label="Навигация"><a href="https://peerivo.net/">← На главную Peerivo.net</a></nav></header>
   <main>
    <section className="hero">
     <span className="eyebrow">✦ ДОБРО НАЧИНАЕТСЯ С МЫСЛИ</span>
