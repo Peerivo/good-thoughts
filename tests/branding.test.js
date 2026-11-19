@@ -23,3 +23,33 @@ test('brand assets have white-background PNG headers and exact sizes',()=>{
    assert.equal(png[25],2); // truecolor RGB (no transparency)
   }
 });
+
+// Regression: the Node server must return PNG bytes, not its SPA HTML fallback.
+// Keep this independent of a Vite build, since CI runs tests before build.
+test('brand assets are served as real PNG files with correct MIME', async()=>{
+  const {createApp}=await import('../src/app.js');
+  const {mkdtempSync,mkdirSync,copyFileSync,rmSync}=await import('node:fs');
+  const {tmpdir}=await import('node:os');
+  const temp=mkdtempSync(join(tmpdir(),'good-thoughts-brand-'));
+  const cwd=process.cwd();
+  try{
+    mkdirSync(join(temp,'dist'));
+    for(const name of ['dm-logo.png','dm-icon.png'])
+      copyFileSync(join(root,'web/public',name),join(temp,'dist',name));
+    process.chdir(temp);
+    const app=createApp({dbPath:join(temp,'test.sqlite'),adminToken:'a-strong-private-test-admin-token-value'});
+    try{
+      await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));
+      const base='http://127.0.0.1:'+app.server.address().port;
+      for(const name of ['dm-logo.png','dm-icon.png']){
+        const response=await fetch(base+'/'+name);
+        assert.equal(response.status,200);
+        assert.match(response.headers.get('content-type'),/^image\/png/);
+        const body=Buffer.from(await response.arrayBuffer());
+        assert.equal(body.toString('hex',0,8),'89504e470d0a1a0a');
+      }
+      const privatePath=await fetch(base+'/.env');
+      assert.notEqual(privatePath.headers.get('content-type'),'application/octet-stream');
+    }finally{await app.close();}
+  }finally{process.chdir(cwd);rmSync(temp,{force:true,recursive:true});}
+});

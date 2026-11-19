@@ -207,9 +207,10 @@ export function createApp(options={}) {
   }
   if(method==='GET'&&!path.startsWith('/api/')){
     const isAsset=/^\/assets\/[A-Za-z0-9_.-]+$/.test(path);
-    const file=isAsset?join(process.cwd(),'dist',path):join(process.cwd(),'dist','index.html');
+    const isBrandAsset=path==='/dm-logo.png'||path==='/dm-icon.png';
+    const file=(isAsset||isBrandAsset)?join(process.cwd(),'dist',path):join(process.cwd(),'dist','index.html');
     if(!existsSync(file))return json(res,404,{message:'Frontend not built'});
-    const ext=extname(file),contentType={'.html':'text/html','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml'}[ext]||'application/octet-stream';
+    const ext=extname(file),contentType={'.html':'text/html','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml','.png':'image/png'}[ext]||'application/octet-stream';
     res.writeHead(200,{'Content-Type':contentType+'; charset=utf-8','X-Content-Type-Options':'nosniff',
       'Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'self'; img-src 'self' data:; connect-src 'self'; script-src 'self'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'"});
     return res.end(readFileSync(file));
