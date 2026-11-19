@@ -233,3 +233,44 @@ test('replacing an awaiting draft invalidates the old version without any owner 
   assert.equal(s.emails.length,1,'no response may be sent without explicit owner approval');
  } finally { await s.done(); }
 });
+
+
+test('owner-only mutations cannot draft, approve, revise or deliver without valid authorization',async()=>{
+ const s=await setup();
+ const good={authorization:'Bearer admin_token_that_is_at_least_20_chars'};
+ const bad={authorization:'Bearer invalid_token_that_is_at_least_20_chars'};
+ try{
+  const created=await s.call('/api/requests',VALID);
+  assert.equal(created.status,202);
+  const id=created.body.requestId;
+  const code=s.emails[0].text.match(/[0-9]{6}/)[0];
+  assert.equal((await s.call('/api/verify',{requestId:id,code})).status,200);
+  const attempted='Этот текст не должен попасть в приватный черновик.';
+  for(const headers of [{},bad]){
+   const r=await s.call('/api/internal/draft',{id,answer:attempted},headers);
+   assert.equal(r.status,401);
+   assert.equal(s.emails.length,1);
+  }
+  let queue=await s.call('/api/internal/pending',undefined,good);
+  assert.equal(queue.body.requests.length,1);
+  assert.equal(queue.body.awaitingApproval.length,0);
+  const draft=await s.call('/api/internal/draft',{id,answer:'Бережный черновик, ожидающий решения владельца.'},good);
+  assert.equal(draft.status,200);
+  const version=draft.body.draftVersion;
+  for(const path of ['/api/internal/approve','/api/internal/deliver']){
+   for(const headers of [{},bad]){
+    const payload=path.endsWith('/approve')?{id,version,decision:'approve'}:{id,version};
+    assert.equal((await s.call(path,payload,headers)).status,401,path);
+   }
+  }
+  for(const headers of [{},bad]){
+   assert.equal((await s.call('/api/internal/approve',{id,version,decision:'revise'},headers)).status,401);
+  }
+  queue=await s.call('/api/internal/pending',undefined,good);
+  assert.equal(queue.body.requests.length,0);
+  assert.equal(queue.body.awaitingApproval.length,1);
+  assert.equal(queue.body.awaitingApproval[0].status,'awaiting_approval');
+  assert.equal(queue.body.awaitingApproval[0].draft_version,version);
+  assert.equal(s.emails.length,1,'unauthorized approval or delivery must have no external side effect');
+ }finally{await s.done();}
+});
