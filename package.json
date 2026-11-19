@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "start": "node src/server.js",
+    "telegram:activate": "node scripts/activate-telegram.mjs",
     "dev": "vite --host 127.0.0.1 --port 3523",
     "build": "vite build",
     "test": "node --test tests/*.test.js",
