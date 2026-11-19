@@ -1,4 +1,4 @@
-import React,{useState} from 'react';
+import React,{useEffect,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import './style.css';
 
@@ -17,7 +17,7 @@ const okJson=async(path, data)=>{
  return result;
 };
 function Logo(){
- return <img className="logo-mark" src="/dm-logo.png" alt="ДМ — Фабрика добрых мыслей" width="108" height="61" />;
+ return <img className="logo-mark" src="/dm-logo.png?source=owner-20261119" alt="ДМ — Фабрика добрых мыслей" width="108" height="61" />;
 }
 function App(){
  const [category,setCategory]=useState('support');
@@ -29,6 +29,20 @@ function App(){
  const [loading,setLoading]=useState(false);
  const [error,setError]=useState('');
  const [agreed,setAgreed]=useState(false);
+ const [channels,setChannels]=useState({emailEnabled:false,telegramEnabled:false,checking:true});
+ useEffect(()=>{
+  let active=true;
+  fetch('/api/health',{cache:'no-store'}).then(async response=>{
+   if(!response.ok)throw Error('offline');
+   const data=await response.json();
+   if(active)setChannels({
+    emailEnabled:data.emailEnabled===true,
+    telegramEnabled:data.telegramEnabled===true,
+    checking:false
+   });
+  }).catch(()=>{if(active)setChannels({emailEnabled:false,telegramEnabled:false,checking:false});});
+  return ()=>{active=false;};
+ },[]);
  const submit=async(e)=>{
   e.preventDefault();setError('');setLoading(true);
   try{
@@ -52,6 +66,12 @@ function App(){
     <div className="hero-bottom"><span className="sun">☼</span><span>Без оценок. Без спешки. С уважением к вам.</span></div>
    </section>
    <section className="form-card" id="ask">
+    {!channels.checking&&!channels.emailEnabled&&<div className="service-notice" role="status"><b>Приём вопросов с сайта пока готовится.</b><p>Настраиваем подтверждение email и доставку ответов. Просмотреть направления поддержки можно уже сейчас, но отправка формы временно выключена.</p></div>}
+    {!channels.checking&&<div className="bot-notice" role="status">
+      {channels.telegramEnabled
+       ? <><b>Telegram-бот подключён:</b> <a href="https://t.me/DobryeMysliFactoryBot" target="_blank" rel="noopener noreferrer">@DobryeMysliFactoryBot</a></>
+       : <><b>Наш Telegram-бот:</b> @DobryeMysliFactoryBot (подключаем)</>}
+    </div>}
     {phase==='write'&&<form onSubmit={submit}>
      <span className="eyebrow">01 / ВЫБЕРИТЕ НАПРАВЛЕНИЕ</span>
      <h2>Чем мы можем помочь?</h2>
@@ -64,7 +84,7 @@ function App(){
       <span className="hint">Отправим шестизначный код для подтверждения, а затем — ответ.</span></div>
      <label className="consent"><input type="checkbox" checked={agreed} onChange={e=>setAgreed(e.target.checked)} required/> <span>Согласен(на) на обработку вопроса и email для получения ответа. Не указывайте конфиденциальные данные.</span></label>
      {error&&<div role="alert" className="error">{error}</div>}
-     <button className="submit" type="submit" disabled={!agreed||loading}>{loading?'Отправляем код…':'Отправить добрую мысль'} <span aria-hidden="true">↗</span></button>
+     <button className="submit" type="submit" disabled={!agreed||loading||!channels.emailEnabled}>{loading?'Отправляем код…':'Отправить добрую мысль'} <span aria-hidden="true">↗</span></button>
      <p className="hint under">После подтверждения подготовим ответ. Он придёт после проверки владельцем проекта; срок зависит от согласования.</p>
     </form>}
     {phase==='verify'&&<form onSubmit={verify} className="phase">

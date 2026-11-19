@@ -13,3 +13,6 @@ __pycache__/
 *.pyc
 dist-next/
 dist-rollback*/
+dist-build/
+.releases/
+.dist-link-*

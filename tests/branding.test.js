@@ -11,7 +11,7 @@ test('browser title uses requested em dash and Peerivo.net',()=>{
 test('menu has one link back to Peerivo and renders original brand logo',()=>{
   const jsx=readFileSync(join(root,'web/src/main.jsx'),'utf8');
   assert.match(jsx,/<nav className="site-nav"[^>]*><a href="https:\/\/peerivo.net\/">/);
-  assert.match(jsx,/src="\/dm-logo\.png"/);
+  assert.match(jsx,/src="\/dm-logo\.png/);
   assert.equal((jsx.match(/<nav /g)||[]).length,1);
 });
 test('brand assets have white-background PNG headers and exact sizes',()=>{
@@ -52,4 +52,12 @@ test('brand assets are served as real PNG files with correct MIME', async()=>{
       assert.notEqual(privatePath.headers.get('content-type'),'application/octet-stream');
     }finally{await app.close();}
   }finally{process.chdir(cwd);rmSync(temp,{force:true,recursive:true});}
+});
+
+test('site does not pretend offline channels are ready or accept email without mail',()=>{
+ const jsx=readFileSync(join(root,'web/src/main.jsx'),'utf8');
+ assert.match(jsx,/fetch\('\/api\/health'/);
+ assert.match(jsx,/disabled=\{!agreed\|\|loading\|\|!channels\.emailEnabled\}/);
+ assert.match(jsx,/DobryeMysliFactoryBot/);
+ assert.match(jsx,/Приём вопросов с сайта пока готовится/);
 });
