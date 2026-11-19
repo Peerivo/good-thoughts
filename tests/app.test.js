@@ -161,3 +161,18 @@ test('HEAD on public frontend matches GET status and content type without body',
   assert.equal((await fetch(base+'/api/internal/pending',{method:'HEAD'})).status,401);
  }finally{await s.done();}
 });
+
+// Regression: private questions must never be readable with an invalid token or cached.
+test('private pending API rejects wrong bearer and disables caching',async()=>{
+ const s=await setup();
+ try {
+  const base='http://127.0.0.1:'+s.app.server.address().port;
+  const wrong=await fetch(base+'/api/internal/pending',{headers:{authorization:'Bearer incorrect_token_that_is_long_enough'}});
+  assert.equal(wrong.status,401);
+  assert.equal(wrong.headers.get('cache-control'),'no-store');
+  const valid=await fetch(base+'/api/internal/pending',{headers:{authorization:'Bearer admin_token_that_is_at_least_20_chars'}});
+  assert.equal(valid.status,200);
+  assert.equal(valid.headers.get('cache-control'),'no-store');
+  assert.equal(valid.headers.get('x-content-type-options'),'nosniff');
+ }finally{await s.done();}
+});
