@@ -208,3 +208,28 @@ test('private pending API rejects wrong bearer and disables caching',async()=>{
   assert.equal(valid.headers.get('x-content-type-options'),'nosniff');
  }finally{await s.done();}
 });
+
+test('replacing an awaiting draft invalidates the old version without any owner approval',async()=>{
+ const s=await setup();
+ const hdr={authorization:'Bearer admin_token_that_is_at_least_20_chars'};
+ try {
+  const request=await s.call('/api/requests',VALID);
+  assert.equal(request.status,202);
+  const id=request.body.requestId;
+  const code=s.emails[0].text.match(/[0-9]{6}/)[0];
+  assert.equal((await s.call('/api/verify',{requestId:id,code})).status,200);
+  const first=await s.call('/api/internal/draft',{id,answer:'Первый вариант ответа, ещё не одобренный владельцем.'},hdr);
+  assert.equal(first.status,200);
+  const second=await s.call('/api/internal/draft',{id,answer:'Исправленный вариант ответа, также без одобрения.'},hdr);
+  assert.equal(second.status,200);
+  assert.equal(second.body.draftVersion,first.body.draftVersion+1);
+  assert.equal((await s.call('/api/internal/approve',{id,version:first.body.draftVersion,decision:'approve'},hdr)).status,409);
+  assert.equal((await s.call('/api/internal/deliver',{id,version:first.body.draftVersion},hdr)).status,409);
+  assert.equal((await s.call('/api/internal/deliver',{id,version:second.body.draftVersion},hdr)).status,409);
+  const pending=await s.call('/api/internal/pending',undefined,hdr);
+  assert.equal(pending.body.awaitingApproval.length,1);
+  assert.equal(pending.body.awaitingApproval[0].draft_version,second.body.draftVersion);
+  assert.match(pending.body.awaitingApproval[0].answer,/Исправленный вариант/);
+  assert.equal(s.emails.length,1,'no response may be sent without explicit owner approval');
+ } finally { await s.done(); }
+});
