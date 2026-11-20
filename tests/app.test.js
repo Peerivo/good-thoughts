@@ -147,6 +147,32 @@ test('ambiguous delivery failure never silently retries or resends',async()=>{
   assert.equal((await s.call('/api/internal/pending',undefined,hdr)).body.failedDeliveries.length,1);
  }finally{await s.done();}
 });
+test('owner notification metadata excludes question, contact and draft text',async()=>{
+ const s=await setup();
+ const hdr={authorization:'Bearer admin_token_that_is_at_least_20_chars'};
+ const question='Личный вопрос: прошу сохранить мой контакт private-contact@example.org в тайне.';
+ const answer='Бережный приватный ответ, который должен оставаться только в защищённой очереди.';
+ try{
+  const r=await s.call('/api/requests',{...VALID,question,email:'private-contact@example.org'});
+  assert.equal(r.status,202);
+  const code=s.emails[0].text.match(/[0-9]{6}/)[0];
+  assert.equal((await s.call('/api/verify',{requestId:r.body.requestId,code})).status,200);
+  const draft=await s.call('/api/internal/draft',{id:r.body.requestId,answer},hdr);
+  assert.equal(draft.status,200);
+  const notices=await s.call('/api/internal/notifications',undefined,hdr);
+  assert.equal(notices.status,200);
+  assert.equal(notices.body.notifications.length,2);
+  for(const n of notices.body.notifications){
+   assert.deepEqual(Object.keys(n).sort(),['created_at','id','kind','request_id']);
+   const serialized=JSON.stringify(n);
+   for(const secret of [question,'private-contact@example.org',answer,code])
+    assert.equal(serialized.includes(secret),false,'notification must not expose private user content');
+  }
+  const pending=await s.call('/api/internal/pending',undefined,hdr);
+  assert.equal(pending.body.awaitingApproval[0].question,question);
+  assert.equal(pending.body.awaitingApproval[0].answer,answer);
+ }finally{await s.done();}
+});
 test('notification outbox is owner-only and records a single issue receipt',async()=>{
  const s=await setup(),hdr={authorization:'Bearer admin_token_that_is_at_least_20_chars'};
  try{
