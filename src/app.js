@@ -111,7 +111,7 @@ export function createApp(options={}) {
     if(!m||m.chat?.type!=='private'||!Number.isSafeInteger(m.chat.id)||typeof m.text!=='string')
       return json(res,200,{ok:true});
     const chatId=String(m.chat.id),text=m.text.trim();
-    if(text==='/start'||text==='/help'){
+    if(/^\/(?:start|help)(?:\s|$)/.test(text)){
       try{await telegramSender({chatId,text:'Добро пожаловать в Фабрику добрых мыслей 🌿\nНапишите, что вас волнует. Можно использовать команды /gratitude, /mindfulness, /reframe, /inspiration, /mood.'});}catch{}
       return json(res,200,{ok:true});
     }

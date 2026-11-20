@@ -92,6 +92,23 @@ test('rejects invalid input and throttles repeated requests',async()=>{
   assert.equal((await s.call('/api/requests',VALID)).status,429);
  }finally{await s.done();}
 });
+test('Telegram /start deep links and /help arguments never enter the private question queue',async()=>{
+ const s=await setup({telegramToken:'dummy_bot',telegramSecret:'this-is-a-secret'});
+ const hdr={'x-telegram-bot-api-secret-token':'this-is-a-secret'};
+ const owner={authorization:'Bearer admin_token_that_is_at_least_20_chars'};
+ try{
+  for(const [i,txt] of ['/start welcome','/help details'].entries()){
+   const incoming={update_id:99001+i,message:{chat:{id:12345,type:'private'},text:txt}};
+   assert.equal((await s.call('/api/telegram/webhook',incoming,hdr)).status,200);
+  }
+  const pending=await s.call('/api/internal/pending',undefined,owner);
+  assert.equal(pending.body.requests.length,0,'bot commands are not user questions');
+  assert.equal(s.telegram.length,2,'bot responds to both commands');
+  const notices=await s.call('/api/internal/notifications',undefined,owner);
+  assert.equal(notices.body.notifications.length,0,'no owner alerts for commands');
+ }finally{await s.done();}
+});
+
 test('telegram requires secret, ignores duplicate update, queues private chat',async()=>{
  const s=await setup({telegramToken:'dummy_bot',telegramSecret:'this-is-a-secret'});
  try{
