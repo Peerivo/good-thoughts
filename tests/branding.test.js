@@ -61,3 +61,11 @@ test('site does not pretend offline channels are ready or accept email without m
  assert.match(jsx,/DobryeMysliFactoryBot/);
  assert.match(jsx,/Приём вопросов с сайта пока готовится/);
 });
+
+test('form recognizes a verified browser session and skips the code screen only on explicit API response',()=>{
+ const jsx=readFileSync(join(root,'web/src/main.jsx'),'utf8');
+ assert.match(jsx,/fetch\('\/api\/email-session'/);
+ assert.match(jsx,/result\.requiresVerification===false/);
+ assert.match(jsx,/Новый код не нужен/);
+ assert.match(jsx,/\/api\/email-session\/forget/);
+});

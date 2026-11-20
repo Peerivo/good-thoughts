@@ -35,6 +35,9 @@ export function openStore(path) {
  db.prepare("UPDATE requests SET status='awaiting_approval', approved_version=NULL WHERE status IN ('answered','delivery_failed','processing') AND approved_version IS NULL").run();
  db.exec("CREATE TABLE IF NOT EXISTS owner_notifications (id TEXT PRIMARY KEY,request_id TEXT NOT NULL REFERENCES requests(id),kind TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',issue_number INTEGER,created_at INTEGER NOT NULL,sent_at INTEGER,UNIQUE(request_id,kind,created_at));");
  db.exec("CREATE INDEX IF NOT EXISTS owner_notice_pending ON owner_notifications(status,created_at);");
+ // Persistent email proof: store only the SHA-256 digest of the random browser credential.
+ db.exec('CREATE TABLE IF NOT EXISTS email_sessions (token_hash TEXT PRIMARY KEY,email TEXT NOT NULL,expires_at INTEGER NOT NULL);');
+ db.exec('CREATE INDEX IF NOT EXISTS email_session_expiry ON email_sessions(expires_at);');
  return db;
 }
 export function consumeLimit(db,key,max,windowMs,t=Date.now()){

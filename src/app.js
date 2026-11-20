@@ -1,5 +1,5 @@
 import {createServer} from 'node:http';
-import {createHash,randomUUID,randomInt,timingSafeEqual} from 'node:crypto';
+import {createHash,randomUUID,randomInt,randomBytes,timingSafeEqual} from 'node:crypto';
 import {readFileSync,existsSync} from 'node:fs';
 import {join,extname} from 'node:path';
 import {openStore,consumeLimit} from './store.js';
@@ -14,6 +14,23 @@ function equal(a,b) {
  return x.length===y.length&&timingSafeEqual(x,y);
 }
 const time=()=>Date.now();
+const EMAIL_COOKIE='__Host-dm-email';
+const SESSION_SECONDS=365*24*60*60;
+function cookieToken(req){
+ const pairs=String(req.headers.cookie||'').split(';').map(x=>x.trim());
+ const matches=pairs.filter(x=>x.startsWith(EMAIL_COOKIE+'='));
+ if(matches.length!==1)return null;
+ const token=matches[0].slice(EMAIL_COOKIE.length+1);
+ return /^[a-f0-9]{64}$/.test(token)?token:null;
+}
+function emailCookie(res,token,maxAge=SESSION_SECONDS){
+ res.setHeader('Set-Cookie',EMAIL_COOKIE+'='+token+'; Path=/; Max-Age='+maxAge+'; HttpOnly; Secure; SameSite=Strict');
+}
+function safeEmailPost(req){
+ const ct=String(req.headers['content-type']||'').split(';')[0].trim().toLowerCase();
+ const site=req.headers['sec-fetch-site'];
+ return ct==='application/json'&&(!site||site==='same-origin'||site==='none');
+}
 
 export function createApp(options={}) {
  const config={
@@ -30,6 +47,17 @@ export function createApp(options={}) {
  const ipHash=v=>hash(v+':'+config.adminToken);
  function ownerNotification(id,kind) {
   db.prepare("INSERT INTO owner_notifications(id,request_id,kind,created_at) VALUES(?,?,?,?)").run(randomUUID(),id,kind,time());
+ }
+ function transaction(fn){
+  db.exec('BEGIN IMMEDIATE');
+  try{const result=fn();db.exec('COMMIT');return result;}
+  catch(err){db.exec('ROLLBACK');throw err;}
+ }
+ function emailSession(req,t=time()){
+  const token=cookieToken(req);
+  if(!token)return null;
+  const row=db.prepare('SELECT email FROM email_sessions WHERE token_hash=? AND expires_at>?').get(hash(token),t);
+  return row?{email:row.email,token}:null;
  }
  const mailEnabled=()=>Boolean(options.emailSender||(config.resendKey&&config.mailFrom));
  const telegramEnabled=()=>Boolean(config.telegramToken&&config.telegramSecret);
@@ -54,6 +82,18 @@ export function createApp(options={}) {
     emailEnabled:mailEnabled()&&Boolean(config.resendKey&&config.mailFrom),
     telegramEnabled:telegramEnabled()});
   if(method==='GET'&&path==='/api/categories')return json(res,200,{categories:CATEGORIES});
+  if(method==='GET'&&path==='/api/email-session'){
+    const session=emailSession(req);
+    return json(res,200,{verifiedEmail:session?.email??null});
+  }
+  if(method==='POST'&&['/api/requests','/api/verify','/api/email-session/forget'].includes(path)&&!safeEmailPost(req))
+    return json(res,403,{message:'Откройте форму на сайте, чтобы продолжить.'});
+  if(method==='POST'&&path==='/api/email-session/forget'){
+    const token=cookieToken(req);
+    if(token)db.prepare('DELETE FROM email_sessions WHERE token_hash=?').run(hash(token));
+    emailCookie(res,'',0);
+    return json(res,200,{verifiedEmail:null});
+  }
   if(method==='POST'&&path==='/api/requests'){
     if(!mailEnabled())return json(res,503,{message:'Подтверждение по email пока не подключено.'});
     const b=await body(req);
@@ -66,6 +106,18 @@ export function createApp(options={}) {
     if(!consumeLimit(db,ipHash('ip:'+ip),6,3600000,t)||
        !consumeLimit(db,ipHash('email:'+email),5,86400000,t))
       return json(res,429,{message:'Слишком много обращений. Попробуйте позже.'});
+    const session=emailSession(req,t);
+    if(session&&session.email===email){
+      const id=randomUUID();
+      transaction(()=>{
+       db.prepare('INSERT INTO requests(id,channel,category,question,email,status,created_at,queued_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+        .run(id,'email',category,question,email,'queued',t,t,t);
+       ownerNotification(id,'new_question');
+       db.prepare('UPDATE email_sessions SET expires_at=? WHERE token_hash=?').run(t+SESSION_SECONDS*1000,hash(session.token));
+      });
+      emailCookie(res,session.token);
+      return json(res,202,{requestId:id,requiresVerification:false,message:'Email уже подтверждён. Вопрос принят.'});
+    }
     const id=randomUUID(),code=String(randomInt(0,1000000)).padStart(6,'0');
     db.prepare('INSERT INTO requests(id,channel,category,question,email,status,code_hash,code_expires,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
      .run(id,'email',category,question,email,'pending_verification',hash(id+':'+code+':'+config.adminToken),t+600000,t,t);
@@ -76,7 +128,7 @@ export function createApp(options={}) {
       db.prepare("DELETE FROM requests WHERE id=? AND status='pending_verification'").run(id);
       return json(res,503,{message:'Не удалось отправить код. Обращение не принято.'});
     }
-    return json(res,202,{requestId:id,message:'Код отправлен. Подтвердите email, чтобы ваш вопрос попал в очередь.'});
+    return json(res,202,{requestId:id,requiresVerification:true,message:'Код отправлен. Подтвердите email, чтобы ваш вопрос попал в очередь.'});
   }
   if(method==='POST'&&path==='/api/verify'){
     const b=await body(req);
@@ -94,9 +146,16 @@ export function createApp(options={}) {
       db.prepare('UPDATE requests SET attempts=attempts+1,updated_at=? WHERE id=?').run(time(),r.id);
       return json(res,400,{message:'Неверный код.'});
     }
-    db.prepare("UPDATE requests SET status='queued',code_hash=NULL,code_expires=NULL,queued_at=?,updated_at=? WHERE id=?").run(time(),time(),r.id);
-    ownerNotification(r.id,'new_question');
-    return json(res,200,{message:'Вопрос подтверждён. Подготовим ответ и отправим после проверки.'});
+    const token=randomBytes(32).toString('hex'),oldToken=cookieToken(req),t=time();
+    transaction(()=>{
+      db.prepare("UPDATE requests SET status='queued',code_hash=NULL,code_expires=NULL,queued_at=?,updated_at=? WHERE id=?").run(t,t,r.id);
+      ownerNotification(r.id,'new_question');
+      db.prepare('DELETE FROM email_sessions WHERE expires_at<=?').run(t);
+      if(oldToken)db.prepare('DELETE FROM email_sessions WHERE token_hash=?').run(hash(oldToken));
+      db.prepare('INSERT INTO email_sessions(token_hash,email,expires_at) VALUES(?,?,?)').run(hash(token),r.email,t+SESSION_SECONDS*1000);
+    });
+    emailCookie(res,token);
+    return json(res,200,{verifiedEmail:r.email,message:'Вопрос подтверждён. Подготовим ответ и отправим после проверки.'});
   }
   if(method==='POST'&&path==='/api/telegram/webhook'){
     if(!telegramEnabled())return json(res,503,{message:'Telegram disabled'});

@@ -15,7 +15,7 @@ async function setup(extra={}) {
  const call=async(path,data,headers={})=>{
   const response=await fetch(url+path,{method:data===undefined?'GET':'POST',
     headers:{'content-type':'application/json',...headers},body:data===undefined?undefined:JSON.stringify(data)});
-  return {status:response.status,body:await response.json()};
+  return {status:response.status,headers:response.headers,body:await response.json()};
  };
  return {app,dir,emails,telegram,call,done:async()=>{await app.close();rmSync(dir,{recursive:true,force:true});}};
 }
@@ -351,4 +351,74 @@ test('owner-only mutations cannot draft, approve, revise or deliver without vali
   assert.equal(queue.body.awaitingApproval[0].draft_version,version);
   assert.equal(s.emails.length,1,'unauthorized approval or delivery must have no external side effect');
  }finally{await s.done();}
+});
+
+
+test('email confirmation persists per browser and repeat requests are queued without new email code',async()=>{
+ const s=await setup(),owner={authorization:'Bearer admin_token_that_is_at_least_20_chars'};
+ try{
+  const first=await s.call('/api/requests',VALID);
+  assert.equal(first.body.requiresVerification,true);
+  assert.deepEqual((await s.call('/api/email-session')).body,{verifiedEmail:null});
+  const code=s.emails[0].text.match(/[0-9]{6}/)[0];
+  const invalid=await s.call('/api/verify',{requestId:first.body.requestId,code:code==='000000'?'111111':'000000'});
+  assert.equal(invalid.status,400);assert.equal(invalid.headers.get('set-cookie'),null);
+  const verified=await s.call('/api/verify',{requestId:first.body.requestId,code});
+  assert.equal(verified.status,200);
+  const cookie=verified.headers.get('set-cookie');
+  assert.match(cookie,/^__Host-dm-email=[a-f0-9]{64}; Path=\/; Max-Age=31536000; HttpOnly; Secure; SameSite=Strict$/);
+  const auth={cookie:cookie.split(';')[0]};
+  assert.equal((await s.call('/api/email-session',undefined,auth)).body.verifiedEmail,VALID.email);
+  const repeat=await s.call('/api/requests',{...VALID,email:' TEST@EXAMPLE.ORG ',question:'Повторный вопрос без кода.'},auth);
+  assert.equal(repeat.status,202);assert.equal(repeat.body.requiresVerification,false);assert.equal(s.emails.length,1);
+  const pending=await s.call('/api/internal/pending',undefined,owner);assert.equal(pending.body.requests.length,2);
+  const notices=await s.call('/api/internal/notifications',undefined,owner);assert.equal(notices.body.notifications.length,2);
+  assert.equal((await s.call('/api/internal/deliver',{id:repeat.body.requestId,version:1},owner)).status,409);
+  assert.equal(s.emails.length,1,'no automatic answer');
+  const session=s.app.db.prepare('SELECT token_hash,email FROM email_sessions').get();
+  assert.equal(session.email,VALID.email);assert.notEqual(session.token_hash,auth.cookie.split('=')[1]);
+  assert.equal((await s.call('/api/requests',{...VALID,email:'different@example.org'},auth)).body.requiresVerification,true);
+  assert.equal((await s.call('/api/requests',VALID)).body.requiresVerification,true,'a new browser is not verified');
+  const reset=await s.call('/api/email-session/forget',{},auth);assert.equal(reset.status,200);assert.match(reset.headers.get('set-cookie'),/Max-Age=0/);
+  assert.equal((await s.call('/api/email-session',undefined,auth)).body.verifiedEmail,null);
+  assert.equal((await s.call('/api/requests',VALID,auth)).body.requiresVerification,true);
+  assert.equal(s.emails.length,4);
+ }finally{await s.done();}
+});
+
+test('forged, expired and foreign-origin email sessions cannot bypass verification',async()=>{
+ const s=await setup();
+ try{
+  const first=await s.call('/api/requests',VALID);const code=s.emails[0].text.match(/[0-9]{6}/)[0];
+  const verified=await s.call('/api/verify',{requestId:first.body.requestId,code});const auth={cookie:verified.headers.get('set-cookie').split(';')[0]};
+  const csrf=await s.call('/api/requests',VALID,{...auth,'sec-fetch-site':'same-site'});assert.equal(csrf.status,403);
+  const forged={cookie:'__Host-dm-email='+'0'.repeat(64)};
+  assert.equal((await s.call('/api/requests',VALID,forged)).body.requiresVerification,true);
+  s.app.db.prepare('UPDATE email_sessions SET expires_at=0').run();
+  assert.equal((await s.call('/api/email-session',undefined,auth)).body.verifiedEmail,null);
+  assert.equal((await s.call('/api/requests',VALID,auth)).body.requiresVerification,true);
+  assert.equal(s.emails.length,3);
+ }finally{await s.done();}
+});
+
+test('verified email session survives reopening the same SQLite store',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'dm-session-restart-')),emails=[];
+ const options={dbPath:join(dir,'test.sqlite'),adminToken:'admin_token_that_is_at_least_20_chars',emailSender:async m=>emails.push(m)};
+ let app;
+ const start=async()=>{
+  app=createApp(options);await new Promise(ok=>app.server.listen(0,'127.0.0.1',ok));
+  return 'http://127.0.0.1:'+app.server.address().port;
+ };
+ const post=(base,path,data,headers={})=>fetch(base+path,{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify(data)});
+ try{
+  let base=await start();
+  const first=await post(base,'/api/requests',VALID);assert.equal(first.status,202);
+  const requestId=(await first.json()).requestId,code=emails[0].text.match(/[0-9]{6}/)[0];
+  const verified=await post(base,'/api/verify',{requestId,code});assert.equal(verified.status,200);
+  const cookie=verified.headers.get('set-cookie').split(';')[0];
+  await app.close();app=null;base=await start();
+  const who=await fetch(base+'/api/email-session',{headers:{cookie}});assert.equal(who.headers.get('cache-control'),'no-store');assert.equal((await who.json()).verifiedEmail,VALID.email);
+  const repeated=await post(base,'/api/requests',{...VALID,question:'Новый вопрос после перезапуска.'},{cookie});
+  assert.equal(repeated.status,202);assert.equal((await repeated.json()).requiresVerification,false);assert.equal(emails.length,1);
+ }finally{if(app)await app.close();rmSync(dir,{force:true,recursive:true});}
 });

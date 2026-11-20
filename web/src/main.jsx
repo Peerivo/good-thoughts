@@ -23,6 +23,8 @@ function App(){
  const [category,setCategory]=useState('support');
  const [question,setQuestion]=useState('');
  const [email,setEmail]=useState('');
+ const [verifiedEmail,setVerifiedEmail]=useState(null);
+ const emailRemembered=Boolean(verifiedEmail&&email.trim().toLowerCase()===verifiedEmail);
  const [code,setCode]=useState('');
  const [requestId,setRequestId]=useState('');
  const [phase,setPhase]=useState('write');
@@ -41,18 +43,30 @@ function App(){
     checking:false
    });
   }).catch(()=>{if(active)setChannels({emailEnabled:false,telegramEnabled:false,checking:false});});
+  fetch('/api/email-session',{cache:'no-store'}).then(async response=>{
+   if(!response.ok)return;
+   const data=await response.json();
+   if(active&&typeof data.verifiedEmail==='string'){setVerifiedEmail(data.verifiedEmail);setEmail(prev=>prev||data.verifiedEmail);}
+  }).catch(()=>{});
   return ()=>{active=false;};
  },[]);
  const submit=async(e)=>{
   e.preventDefault();setError('');setLoading(true);
   try{
    const result=await okJson('/api/requests',{category,question,email});
-   setRequestId(result.requestId);setPhase('verify');
+   setRequestId(result.requestId);
+   if(result.requiresVerification===false){setVerifiedEmail(email.trim().toLowerCase());setPhase('done');}
+   else {if(emailRemembered)setVerifiedEmail(null);setPhase('verify');}
   }catch(err){setError(err.message);}finally{setLoading(false);}
  };
  const verify=async(e)=>{
   e.preventDefault();setError('');setLoading(true);
-  try{await okJson('/api/verify',{requestId,code});setPhase('done');}
+  try{const result=await okJson('/api/verify',{requestId,code});setVerifiedEmail(result.verifiedEmail||email.trim().toLowerCase());setPhase('done');}
+  catch(err){setError(err.message);}finally{setLoading(false);}
+ };
+ const forgetEmail=async()=>{
+  setError('');setLoading(true);
+  try{await okJson('/api/email-session/forget',{});setVerifiedEmail(null);setEmail('');}
   catch(err){setError(err.message);}finally{setLoading(false);}
  };
  return <div className="site">
@@ -81,10 +95,11 @@ function App(){
       <textarea id="question" minLength="5" maxLength="1500" required value={question} onChange={e=>setQuestion(e.target.value)} placeholder="Например: сегодня мне тревожно перед важным разговором..." rows="5"/></div>
      <div className="form-line"><span className="eyebrow">03 / КУДА ОТВЕТИТЬ</span><label htmlFor="email">Ваш email</label>
       <input id="email" type="email" autoComplete="email" required value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/>
-      <span className="hint">Отправим шестизначный код для подтверждения, а затем — ответ.</span></div>
+      <span className="hint">{emailRemembered?'✓ Email уже подтверждён. Новый код не нужен.':'Подтвердите email шестизначным кодом один раз в этом браузере.'}</span>
+      {verifiedEmail&&<button className="text-button" type="button" disabled={loading} onClick={forgetEmail}>Забыть подтверждённый email в этом браузере</button>}</div>
      <label className="consent"><input type="checkbox" checked={agreed} onChange={e=>setAgreed(e.target.checked)} required/> <span>Согласен(на) на обработку вопроса и email для получения ответа. Не указывайте конфиденциальные данные.</span></label>
      {error&&<div role="alert" className="error">{error}</div>}
-     <button className="submit" type="submit" disabled={!agreed||loading||!channels.emailEnabled}>{loading?'Отправляем код…':'Отправить добрую мысль'} <span aria-hidden="true">↗</span></button>
+     <button className="submit" type="submit" disabled={!agreed||loading||!channels.emailEnabled}>{loading?'Отправляем…':'Отправить добрую мысль'} <span aria-hidden="true">↗</span></button>
      <p className="hint under">После подтверждения подготовим ответ. Он придёт после проверки владельцем проекта; срок зависит от согласования.</p>
     </form>}
     {phase==='verify'&&<form onSubmit={verify} className="phase">
