@@ -235,6 +235,41 @@ test('replacing an awaiting draft invalidates the old version without any owner 
 });
 
 
+test('revision_requested remains blocked until a new draft is explicitly approved',async()=>{
+ const s=await setup();
+ const hdr={authorization:'Bearer admin_token_that_is_at_least_20_chars'};
+ try{
+  const created=await s.call('/api/requests',VALID);
+  assert.equal(created.status,202);
+  const id=created.body.requestId;
+  const code=s.emails[0].text.match(/[0-9]{6}/)[0];
+  assert.equal((await s.call('/api/verify',{requestId:id,code})).status,200);
+  const original=await s.call('/api/internal/draft',{id,answer:'Первый ответ, который владелец возвращает на доработку.'},hdr);
+  assert.equal(original.status,200);
+  const version=original.body.draftVersion;
+  const revise=await s.call('/api/internal/approve',{id,version,decision:'revise'},hdr);
+  assert.equal(revise.status,200);
+  assert.equal(revise.body.status,'revision_requested');
+  let pending=await s.call('/api/internal/pending',undefined,hdr);
+  assert.equal(pending.body.awaitingApproval.length,1);
+  assert.equal(pending.body.awaitingApproval[0].status,'revision_requested');
+  assert.equal(pending.body.awaitingApproval[0].draft_version,version);
+  assert.equal((await s.call('/api/internal/deliver',{id,version},hdr)).status,409);
+  assert.equal((await s.call('/api/internal/approve',{id,version,decision:'approve'},hdr)).status,409);
+  const replacement=await s.call('/api/internal/draft',{id,answer:'Вторая версия, требующая нового явного решения владельца.'},hdr);
+  assert.equal(replacement.status,200);
+  assert.equal(replacement.body.draftVersion,version+1);
+  assert.equal((await s.call('/api/internal/deliver',{id,version},hdr)).status,409);
+  assert.equal((await s.call('/api/internal/deliver',{id,version:replacement.body.draftVersion},hdr)).status,409);
+  pending=await s.call('/api/internal/pending',undefined,hdr);
+  assert.equal(pending.body.awaitingApproval.length,1);
+  assert.equal(pending.body.awaitingApproval[0].status,'awaiting_approval');
+  assert.equal(pending.body.awaitingApproval[0].draft_version,replacement.body.draftVersion);
+  assert.match(pending.body.awaitingApproval[0].answer,/Вторая версия/);
+  assert.equal(s.emails.length,1,'neither version may be sent without owner approval');
+ }finally{await s.done();}
+});
+
 test('owner-only mutations cannot draft, approve, revise or deliver without valid authorization',async()=>{
  const s=await setup();
  const good={authorization:'Bearer admin_token_that_is_at_least_20_chars'};
