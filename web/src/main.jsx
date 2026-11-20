@@ -99,7 +99,7 @@ function App(){
       {verifiedEmail&&<button className="text-button" type="button" disabled={loading} onClick={forgetEmail}>Забыть подтверждённый email в этом браузере</button>}</div>
      <label className="consent"><input type="checkbox" checked={agreed} onChange={e=>setAgreed(e.target.checked)} required/> <span>Согласен(на) на обработку вопроса и email для получения ответа. Не указывайте конфиденциальные данные.</span></label>
      {error&&<div role="alert" className="error">{error}</div>}
-     <button className="submit" type="submit" disabled={!agreed||loading||!channels.emailEnabled}>{loading?'Отправляем…':'Отправить добрую мысль'} <span aria-hidden="true">↗</span></button>
+     <button className="submit" type="submit" disabled={!agreed||loading||!channels.emailEnabled}>{loading?'Отправляем запрос…':'Запросить добрую мысль'} <span aria-hidden="true">↗</span></button>
      <p className="hint under">После подтверждения подготовим ответ. Он придёт после проверки владельцем проекта; срок зависит от согласования.</p>
     </form>}
     {phase==='verify'&&<form onSubmit={verify} className="phase">

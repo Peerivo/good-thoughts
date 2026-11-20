@@ -69,3 +69,9 @@ test('form recognizes a verified browser session and skips the code screen only 
  assert.match(jsx,/Новый код не нужен/);
  assert.match(jsx,/\/api\/email-session\/forget/);
 });
+
+test('primary action requests a good thought rather than suggesting immediate delivery',()=>{
+ const jsx=readFileSync(join(root,'web/src/main.jsx'),'utf8');
+ assert.match(jsx,/loading\?'Отправляем запрос…':'Запросить добрую мысль'/);
+ assert.doesNotMatch(jsx,/Отправить добрую мысль|Открыть добрую мысль/);
+});
